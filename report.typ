@@ -37,7 +37,7 @@
 // Abstract
 #block(inset: (left: 2em, right: 2em))[
   #text(weight: "bold")[Abstract.]
-  We present a method for parallelizing transformer inference across layers, achieving *1.18--1.55x wall-clock speedup* on nanochat models (32 layers, 3.2B parameters) on H100 GPUs. Starting from the DEER framework, we systematically explore Jacobi iteration, Newton's method, and Jacobian approximations, finding that trained transformers are strongly non-contractive ($sigma_max approx 44$) and exact Newton is too expensive. Our key discovery: the identity approximation ($J approx I$) --- reducing the Newton correction to a prefix sum --- is both sufficient for convergence and cost-free. We introduce *identity-Newton-aware training* that makes 7--12 of 32 layers evaluable on the *same input* with 100% output fidelity, and *layer fusion* that concatenates these parallel blocks into one mega-matmul (112 heads, 57K MLP) for GPU-efficient execution, achieving *1.18x real speedup*. Extending this with *chunkwise decomposition* (inspired by DeltaNet) pushes to *1.33x at +3% PPL* or *1.55x at +5% PPL*. We show that these layers are not droppable (early exit degrades PPL by 52%) --- $J approx I$ means they compute important but *input-invariant* features. With wider training coverage ($lambda_"idn" = 1.0$), 12 of 32 layers become parallel-safe with perfect fidelity. Code: #link("https://github.com/xukai92/nanochat/tree/jacobi-layer-parallel")[github.com/xukai92/nanochat].
+  We present a method for parallelizing transformer inference across layers, achieving *1.18--1.55x wall-clock speedup* on nanochat models (32 layers, 3.2B parameters) on H100 GPUs. Starting from the DEER framework, we systematically explore Jacobi iteration, Newton's method, and Jacobian approximations, finding that trained transformers are strongly non-contractive ($sigma_max approx 44$) and exact Newton is too expensive. Our key discovery: the identity approximation ($J approx I$) --- reducing the Newton correction to a prefix sum --- is both sufficient for convergence and cost-free. We introduce *identity-Newton-aware training* that makes 7--12 of 32 layers evaluable on the *same input* with 100% output fidelity, and *layer fusion* that concatenates these parallel blocks into one mega-matmul (112 heads, 57K MLP) for GPU-efficient execution, achieving *1.18x real speedup*. Extending this with *chunkwise decomposition* (inspired by DeltaNet) pushes to *1.33x at +3% PPL* or *1.55x at +5% PPL*. We show that these layers are not droppable (early exit degrades PPL by 52%) --- $J approx I$ means they compute important but *input-invariant* features. With wider training coverage ($lambda_"idn" = 1.0$), 12 of 32 layers become parallel-safe with perfect fidelity. Code: #link("https://github.com/xukai92/nanochat/tree/jacobi-layer-parallel")[github.com/xukai92/nanochat (branch: jacobi-layer-parallel)].
 ]
 
 #v(1em)
@@ -66,7 +66,7 @@ Our key insight is that the Jacobian computation is *unnecessary*. By approximat
 
 + *Systematic exploration*: We test 10+ methods (Jacobi, Gauss-Seidel, FD-Newton, VJP-Newton, diagonal quasi-DEER, preheat, spectral reg, CUDA streams, multi-GPU) providing a negative-results landscape (@sec:negative).
 
-Code: #link("https://github.com/xukai92/nanochat/tree/jacobi-layer-parallel")[github.com/xukai92/nanochat (jacobi-layer-parallel)].
+Code: #link("https://github.com/xukai92/nanochat/tree/jacobi-layer-parallel")[github.com/xukai92/nanochat (branch: jacobi-layer-parallel)].
 
 = Background & Method
 
