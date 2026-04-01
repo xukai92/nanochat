@@ -37,7 +37,7 @@
 // Abstract
 #block(inset: (left: 2em, right: 2em))[
   #text(weight: "bold")[Abstract.]
-  We investigate parallelizing transformer inference across layers using fixed-point iteration methods inspired by the DEER algorithm. Through systematic experiments on nanochat models (20--32 layers, 560M--3.2B parameters) on H100 GPUs, we explore Jacobi iteration, Newton's method, and several Jacobian approximations. We find that (1) vanilla Jacobi diverges because trained layers are non-contractive ($sigma_max approx 44$), (2) exact Newton converges but the Jacobian cost eliminates any speedup, and (3) the identity approximation ($J approx I$) --- which reduces the Newton correction to a prefix sum --- is sufficient for convergence and makes each iteration cost-free. Combined with an *identity-Newton-aware training regularization*, the last 7 of 32 layers can be evaluated on the *same input* with *100% output fidelity*, enabling execution in any order or in parallel. This represents a *1.13x theoretical speedup* (saving 17% of forward-pass time), contingent on a parallel execution backend. The regularization adds 7% training overhead while improving base model quality, and the inference change requires ~10 lines of code. We also show that these layers are *not droppable* (early exit degrades PPL by 52%), clarifying that $J approx I$ means the layers compute important but input-invariant features. Code is available at #link("https://github.com/xukai92/nanochat/tree/jacobi-layer-parallel")[github.com/xukai92/nanochat].
+  We present a method for parallelizing transformer inference across layers, achieving *1.18--1.55x wall-clock speedup* on nanochat models (32 layers, 3.2B parameters) on H100 GPUs. Starting from the DEER framework, we systematically explore Jacobi iteration, Newton's method, and Jacobian approximations, finding that trained transformers are strongly non-contractive ($sigma_max approx 44$) and exact Newton is too expensive. Our key discovery: the identity approximation ($J approx I$) --- reducing the Newton correction to a prefix sum --- is both sufficient for convergence and cost-free. We introduce *identity-Newton-aware training* that makes 7--12 of 32 layers evaluable on the *same input* with 100% output fidelity, and *layer fusion* that concatenates these parallel blocks into one mega-matmul (112 heads, 57K MLP) for GPU-efficient execution, achieving *1.18x real speedup*. Extending this with *chunkwise decomposition* (inspired by DeltaNet) pushes to *1.33x at +3% PPL* or *1.55x at +5% PPL*. We show that these layers are not droppable (early exit degrades PPL by 52%) --- $J approx I$ means they compute important but *input-invariant* features. With wider training coverage ($lambda_"idn" = 1.0$), 12 of 32 layers become parallel-safe with perfect fidelity. Code: #link("https://github.com/xukai92/nanochat/tree/jacobi-layer-parallel")[github.com/xukai92/nanochat].
 ]
 
 #v(1em)
@@ -54,19 +54,19 @@ where $f_i$ is the $i$-th transformer block. This creates a strict dependency ch
 
 The DEER algorithm #cite(label("deer")) reframes sequential computation as a fixed-point problem $G(bold(h)) = bold(h) - F(bold(h)) = 0$, solvable via Newton's method in $O(log L)$ parallel steps. While theoretically elegant, applying this to trained transformers faces a practical barrier: transformer layers are *strongly non-contractive* ($sigma_max approx 44$), meaning naive fixed-point iterations diverge and Newton's method requires expensive Jacobian computation that negates any speedup.
 
-Our key insight is that the Jacobian computation is *unnecessary*. By approximating $J approx I$ (the identity matrix), the Newton correction collapses to a simple prefix sum --- zero-cost forward substitution. Combined with a training regularization that directly penalizes the identity Newton residual, we produce models where a single Newton iteration with $J approx I$ exactly recovers the sequential output for the last 7 layers, yielding a genuine 1.26x wall-clock speedup with no quality loss.
+Our key insight is that the Jacobian computation is *unnecessary*. By approximating $J approx I$ (the identity matrix), the Newton correction collapses to a simple prefix sum --- zero-cost forward substitution. Combined with a training regularization that directly penalizes the identity Newton residual, we produce models where the last 7--12 layers can be evaluated on the same input as the sequential forward, with identical output. Fusing these parallel blocks into one mega-matmul achieves *1.18x real wall-clock speedup*; extending with chunkwise decomposition reaches *1.33--1.55x* with modest quality tradeoffs.
 
 == Contributions
 
-+ *Identity Newton method*: We show that the identity Jacobian approximation is sufficient for Newton convergence on residual transformers, eliminating all JVP/VJP cost and reducing the method to ~10 lines of code (@sec:identity).
++ *Identity Newton method*: The identity Jacobian approximation ($J approx I$) is sufficient for Newton convergence on residual transformers, eliminating all JVP/VJP cost (@sec:identity).
 
-+ *Identity-Newton-aware training*: A regularization loss that trains the model's last $N$ layers to be "parallel-safe," achieving K=1 convergence with 100% output fidelity at only 7% training overhead (@sec:training).
++ *Identity-Newton-aware training*: A regularization loss that trains up to 12 of 32 layers to be "parallel-safe," achieving K=1 convergence with 100% output fidelity at 7% training overhead (@sec:training).
 
-+ *Systematic exploration*: We test 10+ methods (Jacobi, Gauss-Seidel, FD-Newton, VJP-Newton, diagonal quasi-DEER, preheat calibration, spectral regularization, CUDA streams, multi-GPU pipeline) providing a comprehensive negative-results landscape that delineates when each approach fails and why (@sec:negative).
++ *Layer fusion and chunkwise decomposition*: Fusing parallel blocks into one mega-matmul achieves 1.18x real speedup; chunkwise decomposition (inspired by DeltaNet #cite(label("song2021"))) extends to 1.33--1.55x (@sec:results).
 
-+ *1.26x verified speedup* on a 32-layer, 3.2B parameter nanochat model with 100% top-1 agreement and 0% PPL degradation, measured on H100 GPUs (@sec:results).
++ *Systematic exploration*: We test 10+ methods (Jacobi, Gauss-Seidel, FD-Newton, VJP-Newton, diagonal quasi-DEER, preheat, spectral reg, CUDA streams, multi-GPU) providing a negative-results landscape (@sec:negative).
 
-We release all code (training + inference) at #link("https://github.com/xukai92/nanochat/tree/jacobi-layer-parallel")[github.com/xukai92/nanochat (jacobi-layer-parallel branch)].
+Code: #link("https://github.com/xukai92/nanochat/tree/jacobi-layer-parallel")[github.com/xukai92/nanochat (jacobi-layer-parallel)].
 
 = Background & Method
 
@@ -99,11 +99,11 @@ Speedup $> 1$ when $S + K N < L$, i.e., $K < (L - S) / N = 1$. Since $K = 1$ oft
 == Identity-Newton-Aware Training <sec:training>
 
 To ensure $K = 1$ convergence, we add a training regularization:
-$ cal(L)_"total" = cal(L)_"CE" + lambda_"idn" dot sum_(N in {3, 5, 7}) (||hat(h)_L^"idn" - h_L^"seq"||) / (||h_L^"seq"|| + epsilon) $
+$ cal(L)_"total" = cal(L)_"CE" + lambda_"idn" dot sum_(N in cal(S)) (||hat(h)_L^"idn"(N) - h_L^"seq"||) / (||h_L^"seq"|| + epsilon) $
 
-where $hat(h)_L^"idn"$ is the final hidden state from running the last $N$ layers with identity Newton $K = 1$ (using the correct sequential prefix as input), and $h_L^"seq"$ is the true sequential output. This directly penalizes the gap between parallel and sequential execution.
+where $cal(S)$ is a set of parallel layer counts (e.g., ${3, 5, 7}$ for narrow or ${3, 5, 7, 10, 12, 16}$ for wide coverage), $hat(h)_L^"idn"(N)$ is the final hidden state from running the last $N$ layers with identity Newton $K = 1$ using the correct sequential prefix as input, and $h_L^"seq"$ is the true sequential output.
 
-The regularization adds ~7% training overhead (extra block evaluations for 3 values of $N$) and uses a warmup schedule (20% of training at $lambda = 0$, then linearly ramp to target). Empirically, $lambda_"idn" = 0.5$ achieves the best quality-convergence tradeoff.
+The regularization uses a warmup schedule (20% of training at $lambda = 0$, then linearly ramp to target). Two regimes: $lambda_"idn" = 0.5$ with narrow $cal(S)$ achieves 7 parallel layers with perfect fidelity and *better base PPL*; $lambda_"idn" = 1.0$ with wide $cal(S)$ extends to 12 parallel layers but at +12% base PPL cost.
 
 = The Road to Identity Newton: Negative Results <sec:negative>
 
@@ -325,23 +325,23 @@ The speedup formula $L / (S + K dot N)$ improves with depth. For $L = 128$ (e.g.
 
 == Larger Parallel Fractions
 
-On d32, $K = 1$ converges perfectly for 7 of 32 layers (22%). Stronger regularization ($lambda_"idn" = 2$--$5$) or longer training might push this to 10--15 layers (30--47%), where the speedup reaches $32 / (17 + 15) = 1.0x$ to $32 / (22 + 10) = 1.0x$ at $K = 1$. The key question: is there a quality floor below which the regularization degrades the model?
+With wide IDN training ($lambda = 1.0$), 12 of 32 layers (37.5%) are already parallel-safe. Pushing further --- 16--20 layers (50--63%) --- would require either stronger regularization (which degrades base PPL) or architectural changes. The key open question: is there a fundamental limit to how many layers can be made input-invariant before the model loses expressiveness?
 
 == Architectural Co-Design
 
 Parallel attention + MLP blocks (GPT-J/PaLM style, $h_i = h_(i-1) + "attn"(h_(i-1)) + "mlp"(h_(i-1))$) have inherently smaller layer Jacobians than the standard sequential block. Training such architectures with IDN regularization could enable even more aggressive parallelization.
 
-== Parallel Execution Backend
+== Optimized Fusion Kernels
 
-The most immediate next step: realizing the 1.13x theoretical speedup on actual hardware. Options include (a) batching the 7 parallel blocks into a single large matmul (treating blocks as a batch dimension), (b) CUDA graph capture to eliminate Python loop overhead, (c) a Triton kernel that fuses 7 block evaluations, or (d) multi-device execution where each device runs a subset of blocks. The identity Newton method has already proven the *algorithmic* correctness; what remains is the *systems* engineering.
+Our layer fusion concatenates weight matrices at the Python level. A custom Triton kernel could fuse the entire mega-block (norm $arrow$ QKV projection $arrow$ attention $arrow$ output projection $arrow$ norm $arrow$ MLP) into a single kernel, eliminating intermediate memory round-trips and kernel launch overhead. Combined with CUDA graph capture for the sequential prefix, this could push the 1.18x fusion speedup closer to the 1.13x theoretical limit for 7 layers, and improve the chunkwise results further.
 
 == Sub-Layer Pipelining
 
-Our profiling shows QKV projections (13% of block time) can overlap with the previous layer's MLP (41% of block time). This orthogonal optimization could yield $~1.3 times$ speedup with zero quality loss, multiplicative with identity Newton's 1.13x for a combined $~1.5 times$.
+Our profiling shows QKV projections (13% of block time) can overlap with the previous layer's MLP (41% of block time). This orthogonal optimization could yield $~1.3 times$ speedup with zero quality loss, multiplicative with chunkwise fusion's $1.3$--$1.5 times$ for a combined $~1.7$--$2.0 times$.
 
 == Token-Level Combination
 
-Layer-parallel (this work) and token-parallel (Lookahead Decoding #cite(label("santilli2023"))) address orthogonal bottlenecks. Combining them could yield multiplicative speedups: $1.13 times$ (layer) $times$ $1.5$--$2 times$ (token) $= 1.7$--$2.3 times$ total.
+Layer-parallel (this work) and token-parallel (Lookahead Decoding #cite(label("santilli2023"))) address orthogonal bottlenecks. Combining them could yield multiplicative speedups: $1.3$--$1.5 times$ (layer) $times$ $1.5$--$2 times$ (token) $= 2.0$--$3.0 times$ total.
 
 // References
 #heading(numbering: none)[References]
