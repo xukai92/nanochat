@@ -68,6 +68,11 @@ parser.add_argument("--warmup-steps", type=int, default=40, help="number of step
 parser.add_argument("--warmdown-ratio", type=float, default=0.65, help="ratio of iterations for LR warmdown")
 parser.add_argument("--final-lr-frac", type=float, default=0.05, help="final LR as fraction of initial LR")
 parser.add_argument("--resume-from-step", type=int, default=-1, help="resume training from this step (-1 = disable)")
+# Jacobi layer-parallel regularization
+parser.add_argument("--jacobi-reg", type=float, default=0.0, help="contractive regularization weight for Jacobi convergence (0 = disabled)")
+parser.add_argument("--jacobi-reg-warmup", type=float, default=0.0, help="fraction of training to warmup jacobi-reg from 0 to target (0 = no warmup)")
+parser.add_argument("--identity-newton-reg", type=float, default=0.0, help="identity Newton K=1 regularization weight (0 = disabled)")
+parser.add_argument("--spectral-norm", action="store_true", help="apply spectral normalization to all linear layers (hard σ_max=1 constraint)")
 # Evaluation
 parser.add_argument("--eval-every", type=int, default=250, help="evaluate val bpb every N steps (-1 = disable)")
 parser.add_argument("--eval-tokens", type=int, default=80*524288, help="number of tokens to evaluate val loss on")
@@ -241,6 +246,17 @@ def disable_fp8(model):
 
 # -----------------------------------------------------------------------------
 # Compile the model
+
+# Apply spectral normalization if requested (before compile)
+if args.spectral_norm:
+    from torch.nn.utils import spectral_norm
+    count = 0
+    for block in model.transformer.h:
+        for name, module in block.named_modules():
+            if isinstance(module, torch.nn.Linear) and module.weight.shape[0] > 1:
+                spectral_norm(module, n_power_iterations=1)
+                count += 1
+    print0(f"Applied spectral normalization to {count} linear layers")
 
 orig_model = model # original, uncompiled model, for saving raw model state_dict and for inference/evaluation (because the shapes may change shape)
 model = torch.compile(model, dynamic=False) # the inputs to model will never change shape so dynamic=False is safe
@@ -508,7 +524,17 @@ while True:
     synchronize()
     t0 = time.time()
     for micro_step in range(grad_accum_steps):
-        loss = model(x, y)
+        # Jacobi reg with optional curriculum warmup
+        jacobi_reg_eff = args.jacobi_reg
+        if args.jacobi_reg > 0 and args.jacobi_reg_warmup > 0:
+            warmup_steps = int(args.jacobi_reg_warmup * num_iterations)
+            jacobi_reg_eff = args.jacobi_reg * min(1.0, step / max(warmup_steps, 1))
+        # Identity Newton reg uses same warmup schedule
+        idn_reg_eff = args.identity_newton_reg
+        if args.identity_newton_reg > 0 and args.jacobi_reg_warmup > 0:
+            warmup_steps = int(args.jacobi_reg_warmup * num_iterations)
+            idn_reg_eff = args.identity_newton_reg * min(1.0, step / max(warmup_steps, 1))
+        loss = model(x, y, jacobi_reg=jacobi_reg_eff, identity_newton_reg=idn_reg_eff)
         train_loss = loss.detach() # for logging
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
         if scaler is not None:

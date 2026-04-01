@@ -1,0 +1,42 @@
+deer:
+  type: article
+  title: "Parallelizing non-linear sequential models over the sequence length"
+  author: ["Lim, Yi Heng", "Zhu, Qi", "Selfridge, Joshua", "Kasim, Muhammad Firmansyah"]
+  date: 2024
+  parent:
+    type: proceedings
+    title: "International Conference on Learning Representations (ICLR)"
+
+nanochat:
+  type: web
+  title: "Nanochat: The best ChatGPT that $100 can buy"
+  author: ["Karpathy, Andrej"]
+  url: "https://github.com/karpathy/nanochat"
+  date: 2025
+
+song2021:
+  type: article
+  title: "Accelerating Feedforward Computation via Parallel Nonlinear Equation Solving"
+  author: ["Song, Yang", "Meng, Chenlin", "Liao, Renjie", "Ermon, Stefano"]
+  date: 2021
+  parent:
+    type: proceedings
+    title: "International Conference on Machine Learning (ICML)"
+
+zoltowski2025:
+  type: article
+  title: "Parallelizing MCMC Across the Sequence Length"
+  author: ["Zoltowski, David M.", "Wu, Skyler", "Gonzalez, Xavier", "Kozachkov, Leo", "Linderman, Scott W."]
+  date: 2025
+  parent:
+    type: proceedings
+    title: "Advances in Neural Information Processing Systems (NeurIPS)"
+
+santilli2023:
+  type: article
+  title: "Accelerating Transformer Inference for Translation via Parallel Decoding"
+  author: ["Santilli, Andrea", "Severino, Silvio", "Postolache, Emilian", "Maiorca, Valentino", "Mancusi, Michele", "Marin, Riccardo", "Rodola, Emanuele"]
+  date: 2023
+  parent:
+    type: proceedings
+    title: "Association for Computational Linguistics (ACL)"

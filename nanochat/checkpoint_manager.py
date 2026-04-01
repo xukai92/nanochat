@@ -30,6 +30,10 @@ def _patch_missing_config_keys(model_config_kwargs):
 def _patch_missing_keys(model_data, model_config):
     """Add default values for new parameters that may be missing in old checkpoints."""
     n_layer = model_config.n_layer
+    n_embd = model_config.n_embd
+    head_dim = n_embd // model_config.n_head
+    kv_dim = model_config.n_kv_head * head_dim
+    padded_vocab_size = ((model_config.vocab_size + 63) // 64) * 64
     # resid_lambdas defaults to 1.0 (identity scaling)
     if "resid_lambdas" not in model_data:
         model_data["resid_lambdas"] = torch.ones(n_layer)
@@ -38,6 +42,30 @@ def _patch_missing_keys(model_data, model_config):
     if "x0_lambdas" not in model_data:
         model_data["x0_lambdas"] = torch.zeros(n_layer)
         log0(f"Patching missing x0_lambdas in model data to 0.0")
+    # smear_gate defaults to zero (disabled)
+    if "smear_gate.weight" not in model_data:
+        model_data["smear_gate.weight"] = torch.zeros(1, 24)
+        log0(f"Patching missing smear_gate in model data to 0.0")
+    # smear_lambda defaults to 0.0 (disabled)
+    if "smear_lambda" not in model_data:
+        model_data["smear_lambda"] = torch.zeros(1)
+        log0(f"Patching missing smear_lambda in model data to 0.0")
+    # backout_lambda defaults to 0.0 (disabled, no subtraction)
+    if "backout_lambda" not in model_data:
+        model_data["backout_lambda"] = torch.zeros(1)
+        log0(f"Patching missing backout_lambda in model data to 0.0")
+    # value_embeds and ve_gate for layers that should have them
+    from nanochat.gpt import has_ve
+    for i in range(n_layer):
+        if has_ve(i, n_layer):
+            ve_key = f"value_embeds.{i}.weight"
+            if ve_key not in model_data:
+                model_data[ve_key] = torch.zeros(padded_vocab_size, kv_dim)
+                log0(f"Patching missing {ve_key} in model data to 0.0")
+            gate_key = f"transformer.h.{i}.attn.ve_gate.weight"
+            if gate_key not in model_data:
+                model_data[gate_key] = torch.zeros(model_config.n_kv_head, 12)
+                log0(f"Patching missing {gate_key} in model data to 0.0")
 
 def save_checkpoint(checkpoint_dir, step, model_data, optimizer_data, meta_data, rank=0):
     if rank == 0:

@@ -408,7 +408,7 @@ class GPT(nn.Module):
             group["initial_lr"] = group["lr"]
         return optimizer
 
-    def forward(self, idx, targets=None, kv_cache=None, loss_reduction='mean'):
+    def forward(self, idx, targets=None, kv_cache=None, loss_reduction='mean', jacobi_reg=0.0, identity_newton_reg=0.0):
         B, T = idx.size()
 
         # Grab the rotary embeddings for the current sequence length (they are of shape (1, seq_len, 1, head_dim/2))
@@ -448,12 +448,69 @@ class GPT(nn.Module):
         n_layer = self.config.n_layer
         backout_layer = n_layer // 2  # cache at halfway point
         x_backout = None
+        jacobi_reg_loss = 0.0  # accumulate contractive regularization
+        all_h = []  # save per-layer outputs for identity Newton reg
         for i, block in enumerate(self.transformer.h):
             x = self.resid_lambdas[i] * x + self.x0_lambdas[i] * x0
             ve = self.value_embeds[str(i)](idx).to(x.dtype) if str(i) in self.value_embeds else None
+            x_pre = x  # save pre-block input for regularization
             x = block(x, ve, cos_sin, self.window_sizes[i], kv_cache)
+            if jacobi_reg > 0:
+                # Contractive regularization: penalize the Jacobian spectral radius.
+                # Estimate σ_max(∂block/∂input) via finite-difference power iteration:
+                #   σ_max ≈ ||block(x + εv) - block(x)|| / (ε||v||)
+                # Then penalize ||block(x) - x||² scaled by max(0, σ_max - target)
+                # so that the gradient flows through the MAIN forward path.
+                eps_fd = 1e-2
+                v = torch.randn_like(x_pre)
+                v = v / (v.norm(dim=-1, keepdim=True).clamp(min=1e-8))
+                with torch.no_grad():
+                    x_pert = block(x_pre + eps_fd * v, ve, cos_sin, self.window_sizes[i], kv_cache)
+                    x_unpert = block(x_pre, ve, cos_sin, self.window_sizes[i], kv_cache)
+                    Jv_approx = (x_pert - x_unpert) / eps_fd
+                    sigma_est = Jv_approx.float().norm(dim=-1).mean().item()
+                # The FD estimate is no-grad (just for measuring), but we penalize
+                # the actual residual norm of the block in the forward path, weighted
+                # by how much the spectral radius exceeds 1.
+                if sigma_est > 0.9:  # only penalize if spectral radius is near/above 1
+                    residual = x - x_pre
+                    reg_i = (residual.float().norm(dim=-1) / (x_pre.float().norm(dim=-1) + 1e-6)).mean()
+                    weight = min(sigma_est, 3.0)  # stronger penalty for larger spectral radius
+                    jacobi_reg_loss = jacobi_reg_loss + weight * reg_i
+            all_h.append(x)
             if i == backout_layer:
                 x_backout = x
+        # Identity Newton regularization: penalize the gap between sequential output
+        # and what identity Newton K=1 would produce, for the last few layers.
+        # This trains the model so that running the last N layers in parallel (with
+        # one Newton correction using J≈I) gives output close to sequential.
+        identity_newton_loss = 0.0
+        if identity_newton_reg > 0 and targets is not None:
+            # Try parallelizing the last N layers for various N
+            # Covers small (3,5,7) and large (10,12,16) parallel fractions
+            for n_par in [3, 5, min(7, n_layer-1), min(10, n_layer-1), min(12, n_layer-1), min(16, n_layer-2)]:
+                seq_layers = n_layer - n_par
+                # h_seq[seq_layers-1] is the correct hidden state after sequential prefix
+                # We already computed the full sequential forward above.
+                # Now simulate identity Newton K=1 from h_seq[seq_layers-1]:
+                h_init = all_h[seq_layers - 1] if seq_layers > 0 else x0
+                # Run each parallel layer on h_init (the wrong input for layers > seq_layers)
+                h_newton = [None] * n_par
+                for j in range(n_par):
+                    li = seq_layers + j
+                    x_in_j = self.resid_lambdas[li] * h_init + self.x0_lambdas[li] * x0
+                    ve_j = self.value_embeds[str(li)](idx).to(x_in_j.dtype) if str(li) in self.value_embeds else None
+                    h_newton[j] = self.transformer.h[li](x_in_j, ve_j, cos_sin, self.window_sizes[li], kv_cache)
+                # Identity Newton correction: delta = prefix_sum of residuals
+                # residual[j] = h_seq[seq_layers+j] - h_newton[j] (but h_newton used wrong input)
+                # We want h_newton to be CLOSE to h_seq, so penalize the final layer's difference
+                h_newton_final = h_newton[-1]
+                h_seq_final = all_h[n_layer - 1]
+                # Penalize relative L2 distance
+                diff = (h_newton_final.float() - h_seq_final.float()).norm(dim=-1)
+                ref_norm = h_seq_final.float().norm(dim=-1).clamp(min=1e-6)
+                identity_newton_loss = identity_newton_loss + (diff / ref_norm).mean()
+
         # Subtract mid-layer residual to remove low-level features before logit projection
         if x_backout is not None:
             x = x - self.backout_lambda.to(x.dtype) * x_backout
@@ -470,6 +527,10 @@ class GPT(nn.Module):
             # training: given the targets, compute and return the loss
             # TODO experiment with chunked cross-entropy?
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1, reduction=loss_reduction)
+            if jacobi_reg > 0:
+                loss = loss + jacobi_reg * jacobi_reg_loss / n_layer
+            if identity_newton_reg > 0:
+                loss = loss + identity_newton_reg * identity_newton_loss
             return loss
         else:
             # inference: just return the logits directly
