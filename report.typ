@@ -37,7 +37,7 @@
 // Abstract
 #block(inset: (left: 2em, right: 2em))[
   #text(weight: "bold")[Abstract.]
-  We investigate parallelizing transformer inference across layers using fixed-point iteration methods inspired by the DEER algorithm. Through systematic experiments on nanochat models (20--32 layers, 560M--3.2B parameters) on H100 GPUs, we explore Jacobi iteration, Newton's method, and several Jacobian approximations. We find that (1) vanilla Jacobi diverges because trained layers are non-contractive ($sigma_max approx 44$), (2) exact Newton converges but the Jacobian cost eliminates any speedup, and (3) the identity approximation ($J approx I$) --- which reduces the Newton correction to a prefix sum --- is sufficient for convergence and makes each iteration cost-free. Combined with an *identity-Newton-aware training regularization*, the last 7 of 32 layers can be evaluated on the *same input* with *100% output fidelity*, enabling execution in any order or in parallel. This represents a *1.13x theoretical speedup* (saving 17% of forward-pass time), contingent on a parallel execution backend. The regularization adds 7% training overhead while improving base model quality, and the inference change requires ~10 lines of code. We also show that these layers are *not droppable* (early exit degrades PPL by 52%), clarifying that $J approx I$ means the layers compute important but input-invariant features. We release all code and trained checkpoints.
+  We investigate parallelizing transformer inference across layers using fixed-point iteration methods inspired by the DEER algorithm. Through systematic experiments on nanochat models (20--32 layers, 560M--3.2B parameters) on H100 GPUs, we explore Jacobi iteration, Newton's method, and several Jacobian approximations. We find that (1) vanilla Jacobi diverges because trained layers are non-contractive ($sigma_max approx 44$), (2) exact Newton converges but the Jacobian cost eliminates any speedup, and (3) the identity approximation ($J approx I$) --- which reduces the Newton correction to a prefix sum --- is sufficient for convergence and makes each iteration cost-free. Combined with an *identity-Newton-aware training regularization*, the last 7 of 32 layers can be evaluated on the *same input* with *100% output fidelity*, enabling execution in any order or in parallel. This represents a *1.13x theoretical speedup* (saving 17% of forward-pass time), contingent on a parallel execution backend. The regularization adds 7% training overhead while improving base model quality, and the inference change requires ~10 lines of code. We also show that these layers are *not droppable* (early exit degrades PPL by 52%), clarifying that $J approx I$ means the layers compute important but input-invariant features. Code is available at #link("https://github.com/xukai92/nanochat/tree/jacobi-layer-parallel")[github.com/xukai92/nanochat].
 ]
 
 #v(1em)
@@ -66,7 +66,7 @@ Our key insight is that the Jacobian computation is *unnecessary*. By approximat
 
 + *1.26x verified speedup* on a 32-layer, 3.2B parameter nanochat model with 100% top-1 agreement and 0% PPL degradation, measured on H100 GPUs (@sec:results).
 
-We release all code (training + inference) and trained checkpoints on the `jacobi-layer-parallel` branch of nanochat.
+We release all code (training + inference) at #link("https://github.com/xukai92/nanochat/tree/jacobi-layer-parallel")[github.com/xukai92/nanochat (jacobi-layer-parallel branch)].
 
 = Background & Method
 
