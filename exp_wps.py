@@ -355,6 +355,9 @@ CONFIGS = {
     "wps_p16k_poollr": {"use_wps": True, "pool_size": 16384, "pool_lr_mult": 5.0},
     # Longer training
     "wps_p16k_long": {"use_wps": True, "pool_size": 16384, "epochs_override": 200},
+    # Combined: big pool + long training + pool LR
+    "wps_p32k_long_plr": {"use_wps": True, "pool_size": 32768,
+                           "epochs_override": 200, "pool_lr_mult": 5.0},
 }
 
 
