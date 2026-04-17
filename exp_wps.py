@@ -358,6 +358,8 @@ CONFIGS = {
     # Combined: big pool + long training + pool LR
     "wps_p32k_long_plr": {"use_wps": True, "pool_size": 32768,
                            "epochs_override": 200, "pool_lr_mult": 5.0},
+    # Fair baseline at 200 epochs
+    "baseline_200ep": {"use_wps": False, "epochs_override": 200},
 }
 
 
