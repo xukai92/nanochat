@@ -270,7 +270,10 @@ def estimate_loss(model, data, seq_len, batch_size, device, n_batches=20):
 
 
 def train(config_name, use_wps, epochs=50, lr=3e-4, batch_size=64,
-          pool_size=2048, wf_hidden=32, seed=0):
+          pool_size=2048, wf_hidden=32, seed=0,
+          pool_lr_mult=1.0, epochs_override=None):
+    if epochs_override is not None:
+        epochs = epochs_override
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(seed)
 
@@ -285,7 +288,15 @@ def train(config_name, use_wps, epochs=50, lr=3e-4, batch_size=64,
     else:
         model = TinyGPT(config).to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    if pool_lr_mult != 1.0 and use_wps:
+        pool_params = [p for n, p in model.named_parameters() if "pool" in n]
+        other_params = [p for n, p in model.named_parameters() if "pool" not in n]
+        optimizer = torch.optim.Adam([
+            {"params": other_params, "lr": lr},
+            {"params": pool_params, "lr": lr * pool_lr_mult},
+        ])
+    else:
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     steps_per_epoch = len(train_data) // (batch_size * config.seq_len)
 
     history = {"train_loss": [], "val_loss": []}
@@ -337,6 +348,13 @@ CONFIGS = {
     "baseline": {"use_wps": False},
     "wps_p2048": {"use_wps": True, "pool_size": 2048},
     "wps_p4096": {"use_wps": True, "pool_size": 4096},
+    # Large pool (matching CNN finding: pool vocabulary is the lever)
+    "wps_p16k": {"use_wps": True, "pool_size": 16384},
+    "wps_p32k": {"use_wps": True, "pool_size": 32768},
+    # Pool LR sweep: pool at 5x base LR
+    "wps_p16k_poollr": {"use_wps": True, "pool_size": 16384, "pool_lr_mult": 5.0},
+    # Longer training
+    "wps_p16k_long": {"use_wps": True, "pool_size": 16384, "epochs_override": 200},
 }
 
 
